@@ -1,0 +1,254 @@
+/* Filter summary banner */
+.exact-search-summary {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #232F3E;
+    color: white;
+    padding: 15px;
+    margin: 10px 0;
+    border-radius: 8px;
+    font-size: 14px;
+    position: sticky;
+    top: 0;
+    z-index: 1000;
+    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
+}
+
+.exact-search-summary-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+}
+
+.exact-search-summary-detail {
+    font-size: 12px;
+}
+
+.exact-search-summary-counts {
+    text-align: right;
+    white-space: nowrap;
+}
+
+.exact-search-match-count {
+    color: #4CAF50;
+}
+
+.exact-search-hidden-count {
+    color: #FF6B6B;
+}
+
+.exact-search-hidden-link {
+    background: none;
+    border: none;
+    padding: 0;
+    color: #FF6B6B;
+    font: inherit;
+    text-decoration: underline;
+    cursor: pointer;
+}
+
+.exact-search-hidden-link:hover {
+    color: #ff9999;
+}
+
+.exact-search-clear-btn {
+    padding: 5px 10px;
+    background: #FF9900;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+.exact-search-summary-controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px;
+    margin-top: 10px;
+    position: relative;
+    z-index: 1001;
+    pointer-events: auto;
+}
+
+.exact-search-sort-group {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+}
+
+.exact-search-sort-label {
+    font-size: 12px;
+    white-space: nowrap;
+}
+
+.exact-search-sort-btn {
+    padding: 6px 10px;
+    border-radius: 4px;
+    border: 1px solid #8a9ba8;
+    background: #37475a;
+    color: #fff;
+    font-size: 12px;
+    cursor: pointer;
+    pointer-events: auto;
+}
+
+.exact-search-sort-btn:hover {
+    background: #4a5d70;
+}
+
+.exact-search-sort-btn-active {
+    background: #FF9900;
+    border-color: #FF9900;
+    color: #111;
+    font-weight: bold;
+}
+
+.exact-search-clear-btn:hover {
+    background: #E88B00;
+}
+
+/* Matched product styling */
+.exact-search-match {
+    border: 2px solid #4CAF50 !important;
+    border-radius: 8px;
+    padding: 5px;
+    margin: 5px 0;
+    background-color: #f0f8f0;
+    transition: all 0.3s ease-in-out;
+}
+
+.exact-match-badge {
+    background: #4CAF50;
+    color: white;
+    padding: 5px 10px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-weight: bold;
+    display: inline-block;
+    margin-bottom: 10px;
+}
+
+.exact-search-highlight {
+    background-color: #FFEB3B;
+    color: #000;
+    padding: 2px 0;
+    border-radius: 2px;
+}
+
+/* Hidden items take no space */
+.exact-search-hidden {
+    display: none !important;
+    height: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow: hidden !important;
+}
+
+.exact-search-hidden-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 2147483646;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+}
+
+.exact-search-hidden-modal[hidden] {
+    display: none !important;
+}
+
+.exact-search-hidden-modal-backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+}
+
+.exact-search-hidden-modal-panel {
+    position: relative;
+    width: min(920px, 100%);
+    max-height: 85vh;
+    overflow: auto;
+    background: #fff;
+    color: #111;
+    border-radius: 10px;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+}
+
+.exact-search-hidden-modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    padding: 16px 18px;
+    border-bottom: 1px solid #e3e3e3;
+    background: #232F3E;
+    color: #fff;
+}
+
+.exact-search-hidden-modal-header h2 {
+    margin: 0;
+    font-size: 20px;
+}
+
+.exact-search-hidden-modal-close {
+    background: none;
+    border: none;
+    color: #fff;
+    font-size: 28px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 4px;
+}
+
+.exact-search-hidden-modal-meta {
+    padding: 14px 18px;
+    font-size: 14px;
+    border-bottom: 1px solid #eee;
+    background: #f7f7f7;
+}
+
+.exact-search-hidden-modal-list {
+    padding: 12px 18px 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.exact-search-hidden-item {
+    display: flex;
+    gap: 14px;
+    padding: 12px;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    text-decoration: none;
+    color: inherit;
+    background: #fff;
+}
+
+.exact-search-hidden-item:hover {
+    border-color: #FF9900;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+.exact-search-hidden-item img {
+    width: 72px;
+    height: 72px;
+    object-fit: contain;
+    flex-shrink: 0;
+}
+
+.exact-search-hidden-item-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: #007185;
+    margin-bottom: 6px;
+}
+
+.exact-search-hidden-item-meta,
+.exact-search-hidden-item-asin {
+    font-size: 12px;
+    color: #666;
+}
