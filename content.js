@@ -1,3 +1,5 @@
+const EXTENSION_VERSION = chrome.runtime.getManifest().version;
+
 // Listen for messages from popup / background
 chrome.runtime.onMessage.addListener(function(request, sender, sendResponse) {
     if (request.action === 'filterResults') {
@@ -291,28 +293,55 @@ function parsePriceText(text) {
     return Number.isNaN(num) ? null : num;
 }
 
+function isPerUnitPriceBlock(priceEl) {
+    return /\/\s*count|per\s+count|\/\s*unit|per\s+unit|per\s+item/i.test(priceEl.textContent);
+}
+
 function getProductPrice(product) {
-    let lowest = Infinity;
+    const candidates = [];
 
-    product.querySelectorAll('.a-price .a-offscreen, .a-color-price .a-offscreen').forEach(el => {
-        const value = parsePriceText(el.textContent);
-        if (value !== null && value < lowest) {
-            lowest = value;
+    product.querySelectorAll('.a-price').forEach(priceEl => {
+        if (isPerUnitPriceBlock(priceEl)) {
+            return;
         }
-    });
 
-    if (lowest === Infinity) {
-        const whole = product.querySelector('.a-price-whole');
-        const fraction = product.querySelector('.a-price-fraction');
+        const offscreen = priceEl.querySelector('.a-offscreen');
+        if (offscreen) {
+            const value = parsePriceText(offscreen.textContent);
+            if (value !== null) {
+                candidates.push(value);
+            }
+            return;
+        }
+
+        const whole = priceEl.querySelector('.a-price-whole');
+        const fraction = priceEl.querySelector('.a-price-fraction');
         if (whole) {
             const value = parsePriceText(`${whole.textContent}${fraction ? fraction.textContent : ''}`);
             if (value !== null) {
-                lowest = value;
+                candidates.push(value);
             }
         }
+    });
+
+    if (candidates.length > 0) {
+        const mainPrices = candidates.filter(value => value >= 1);
+        if (mainPrices.length > 0) {
+            return Math.min(...mainPrices);
+        }
+        return Math.min(...candidates);
     }
 
-    return lowest === Infinity ? null : lowest;
+    // Fallback: use the largest price on the card (avoids $0.09/count-style values)
+    let highest = null;
+    product.querySelectorAll('.a-price .a-offscreen, .a-color-price .a-offscreen').forEach(el => {
+        const value = parsePriceText(el.textContent);
+        if (value !== null && (highest === null || value > highest)) {
+            highest = value;
+        }
+    });
+
+    return highest;
 }
 
 function daysUntilDate(dateStr) {
@@ -511,8 +540,123 @@ function compareMatchedItems(a, b, sortMode) {
     return priceA - priceB;
 }
 
+function getResultsRowParent() {
+    const results = Array.from(document.querySelectorAll('[data-component-type="s-search-result"]'));
+    if (results.length === 0) {
+        return null;
+    }
+
+    let parent = results[0].parentElement;
+    while (parent) {
+        const directResults = Array.from(parent.children).filter(child =>
+            child.matches('[data-component-type="s-search-result"]')
+        );
+        if (directResults.length >= 2) {
+            return parent;
+        }
+        parent = parent.parentElement;
+    }
+
+    return results[0].parentElement;
+}
+
+function normalizeWrappersForParent(wrappers) {
+    if (wrappers.length === 0) {
+        return { parent: null, wrappers: [] };
+    }
+
+    const sameParent = wrappers.every(wrapper => wrapper.parentElement === wrappers[0].parentElement);
+    if (sameParent) {
+        return { parent: wrappers[0].parentElement, wrappers };
+    }
+
+    const listParent = getResultsRowParent();
+    if (!listParent) {
+        return { parent: wrappers[0].parentElement, wrappers };
+    }
+
+    const normalized = wrappers.map(wrapper => {
+        let node = wrapper;
+        while (node.parentElement && node.parentElement !== listParent) {
+            node = node.parentElement;
+        }
+        return node;
+    });
+
+    return { parent: listParent, wrappers: normalized };
+}
+
+function clearSortStyles() {
+    document.querySelectorAll('[data-component-type="s-search-result"]').forEach(result => {
+        result.style.order = '';
+    });
+
+    const listParent = document.querySelector('[data-exact-search-sortable="true"]');
+    if (listParent) {
+        listParent.style.display = '';
+        listParent.style.flexDirection = '';
+        listParent.removeAttribute('data-exact-search-sortable');
+    }
+}
+
+function applyFlexSortOrder(sortedUnits) {
+    const listParent = getResultsRowParent();
+    if (!listParent) {
+        return;
+    }
+
+    listParent.setAttribute('data-exact-search-sortable', 'true');
+    listParent.style.display = 'flex';
+    listParent.style.flexDirection = 'column';
+
+    sortedUnits.forEach((unit, index) => {
+        unit.style.order = String(index);
+    });
+
+    document.querySelectorAll('.exact-search-hidden').forEach(hidden => {
+        const unit = getSortableUnit(hidden);
+        unit.style.order = String(sortedUnits.length + 1);
+    });
+}
+
+function getReorderWrapper(unit) {
+    let node = unit;
+
+    while (node.parentElement) {
+        const parent = node.parentElement;
+        const productSiblings = Array.from(parent.children).filter(child =>
+            child.matches('[data-component-type="s-search-result"]') ||
+            child.querySelector('[data-component-type="s-search-result"]')
+        );
+
+        if (productSiblings.length > 1) {
+            return node;
+        }
+
+        node = parent;
+    }
+
+    return unit;
+}
+
+function isProductWrapper(element) {
+    return element.matches('[data-component-type="s-search-result"]') ||
+        !!element.querySelector('[data-component-type="s-search-result"]');
+}
+
+function reorderProductWrappers(parent, sortedWrappers) {
+    const visibleSet = new Set(sortedWrappers);
+    const hiddenWrappers = Array.from(parent.children).filter(child =>
+        !visibleSet.has(child) && isProductWrapper(child)
+    );
+
+    sortedWrappers.forEach(wrapper => parent.appendChild(wrapper));
+    hiddenWrappers.forEach(wrapper => parent.appendChild(wrapper));
+}
+
 function sortVisibleMatches(sortMode) {
     if (sortMode === 'amazon') {
+        clearSortStyles();
         return;
     }
 
@@ -530,8 +674,10 @@ function sortVisibleMatches(sortMode) {
             return;
         }
         seen.add(unit);
+
         items.push({
             unit,
+            wrapper: getReorderWrapper(unit),
             price: getProductPrice(unit),
             deliveryDays: getDeliveryDays(unit),
             originalIndex: filterState.amazonOrder.get(unit) ?? Number.MAX_SAFE_INTEGER
@@ -542,22 +688,15 @@ function sortVisibleMatches(sortMode) {
         return;
     }
 
-    const groups = new Map();
-    items.forEach(item => {
-        const parent = item.unit.parentElement;
-        if (!parent) {
-            return;
-        }
-        if (!groups.has(parent)) {
-            groups.set(parent, []);
-        }
-        groups.get(parent).push(item);
-    });
+    items.sort((a, b) => compareMatchedItems(a, b, sortMode));
 
-    groups.forEach((group, parent) => {
-        group.sort((a, b) => compareMatchedItems(a, b, sortMode));
-        group.forEach(item => parent.appendChild(item.unit));
-    });
+    const sortedUnits = items.map(item => item.unit);
+    applyFlexSortOrder(sortedUnits);
+
+    const { parent, wrappers } = normalizeWrappersForParent(items.map(item => item.wrapper));
+    if (parent && wrappers.length > 1) {
+        reorderProductWrappers(parent, wrappers);
+    }
 }
 
 function setSortMode(sortMode) {
@@ -609,7 +748,8 @@ function ensureResultsSummary() {
             </div>
             <div class="exact-search-summary-counts">
                 <span class="exact-search-match-count"></span> |
-                <span class="exact-search-hidden-count-wrap"></span>
+                <span class="exact-search-hidden-count-wrap"></span><br>
+                <span class="exact-search-version">v${EXTENSION_VERSION}</span>
             </div>
         </div>
         <div class="exact-search-summary-controls">
@@ -919,12 +1059,21 @@ function showResultsSummary(visibleCount, hiddenCount, searchTerm) {
     }
 
     updateSortButtons();
+
+    let versionEl = summary.querySelector('.exact-search-version');
+    if (!versionEl) {
+        versionEl = document.createElement('span');
+        versionEl.className = 'exact-search-version';
+        summary.querySelector('.exact-search-summary-counts').appendChild(versionEl);
+    }
+    versionEl.textContent = `v${EXTENSION_VERSION}`;
 }
 
 function clearFilter() {
     filterState.active = false;
     filterState.hiddenResults = null;
     filterState.amazonOrder = new Map();
+    clearSortStyles();
     chrome.storage.local.set({ filterEnabled: false, activeFilterTabId: null });
     cleanupFilteringWatchers();
     closeHiddenResultsModal();

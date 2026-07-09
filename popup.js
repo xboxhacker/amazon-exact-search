@@ -8,6 +8,9 @@ document.addEventListener('DOMContentLoaded', function() {
     const sortMode = document.getElementById('sortMode');
     const status = document.getElementById('status');
     const spellSuggestion = document.getElementById('spellSuggestion');
+    const versionLabel = document.getElementById('versionLabel');
+
+    versionLabel.textContent = `v${chrome.runtime.getManifest().version}`;
 
     chrome.storage.local.get(['searchTerm', 'caseSensitive', 'highlightMatch', 'filterEnabled', 'sortMode'], function(data) {
         if (data.searchTerm) searchTerm.value = data.searchTerm;

@@ -109,6 +109,13 @@
     background: #E88B00;
 }
 
+.exact-search-version {
+    font-size: 11px;
+    color: #9aa8b3;
+    margin-top: 4px;
+    display: inline-block;
+}
+
 /* Matched product styling */
 .exact-search-match {
     border: 2px solid #4CAF50 !important;

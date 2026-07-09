@@ -57,11 +57,16 @@
             font-size: 12px;
             padding: 5px 10px;
         }
+        .version-label {
+            font-size: 11px;
+            color: #888;
+            font-weight: normal;
+        }
     </style>
 </head>
 <body>
     <div class="container">
-        <h2>🔍 Exact Amazon Search</h2>
+        <h2>🔍 Exact Amazon Search <span id="versionLabel" class="version-label"></span></h2>
         <input type="text" id="searchTerm" placeholder='e.g. M6 screw -4mm -M4' value="M6 screw">
         <div class="suggestion" id="spellSuggestion"></div>
         <div class="options">
