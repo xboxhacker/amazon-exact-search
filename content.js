@@ -8,7 +8,7 @@ chrome.runtime.onMessage.addListener(function(request, sender, sendResponse) {
         startFiltering(request.searchTerm, request.caseSensitive, request.highlightMatch);
         sendResponse({status: 'Filtering started'});
     } else if (request.action === 'clearFilter') {
-        clearFilter();
+        clearFilter(false);
         sendResponse({status: 'Filter cleared'});
     }
     return true;
@@ -22,7 +22,9 @@ const filterState = {
     hiddenResults: null,
     observer: null,
     debounceTimer: null,
-    retryTimers: []
+    retryTimers: [],
+    sessionAmazonKey: null,
+    navWatcherStarted: false
 };
 
 function beginInternalUpdate() {
@@ -42,6 +44,28 @@ function isAmazonSearchPage() {
         (location.pathname === '/s' || location.pathname.startsWith('/s/'));
 }
 
+function getAmazonSearchKeyFromLocation() {
+    const params = new URLSearchParams(window.location.search);
+    const k = params.get('k');
+    if (!k) {
+        return '';
+    }
+
+    return decodeURIComponent(k.replace(/\+/g, ' ')).trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function endFilterSession(options) {
+    const reload = !!(options && options.reload);
+
+    clearFilter(false);
+    chrome.runtime.sendMessage({ action: 'endFilterSession' }, function() {
+        if (reload && isAmazonSearchPage()) {
+            // Hard restore: Amazon re-renders the original unfiltered results page
+            window.location.reload();
+        }
+    });
+}
+
 // Resume filtering when user returns to a tab or reloads a results page
 if (isAmazonSearchPage()) {
     chrome.runtime.sendMessage({ action: 'getTabFilterState' }, function(response) {
@@ -51,7 +75,17 @@ if (isAmazonSearchPage()) {
 
         filterState.sortMode = response.sortMode || 'amazon';
         filterState.active = true;
+        filterState.sessionAmazonKey = getAmazonSearchKeyFromLocation();
         startFiltering(response.searchTerm, response.caseSensitive, response.highlightMatch);
+    });
+} else {
+    // Navigated to cart, product page, etc. — end any active filter session for this tab
+    chrome.runtime.sendMessage({ action: 'getTabFilterState' }, function(response) {
+        if (chrome.runtime.lastError || !response || !response.shouldFilter) {
+            return;
+        }
+
+        chrome.runtime.sendMessage({ action: 'endFilterSession' }).catch(() => {});
     });
 }
 
@@ -75,6 +109,7 @@ function startFiltering(searchTerm, caseSensitive, highlightMatch) {
         return;
     }
 
+    filterState.sessionAmazonKey = getAmazonSearchKeyFromLocation();
     cleanupFilteringWatchers();
 
     const run = () => {
@@ -89,6 +124,35 @@ function startFiltering(searchTerm, caseSensitive, highlightMatch) {
     });
 
     observePageChanges(searchTerm, caseSensitive, highlightMatch);
+    watchAmazonSearchNavigation();
+}
+
+function watchAmazonSearchNavigation() {
+    if (filterState.navWatcherStarted) {
+        return;
+    }
+
+    filterState.navWatcherStarted = true;
+
+    // Catch SPA / history navigations where the Amazon query changes
+    const check = () => {
+        if (!filterState.active) {
+            return;
+        }
+
+        if (!isAmazonSearchPage()) {
+            endFilterSession();
+            return;
+        }
+
+        const currentKey = getAmazonSearchKeyFromLocation();
+        if (filterState.sessionAmazonKey && currentKey && currentKey !== filterState.sessionAmazonKey) {
+            endFilterSession();
+        }
+    };
+
+    window.addEventListener('popstate', check);
+    setInterval(check, 1000);
 }
 
 function getProductElements() {
@@ -717,7 +781,13 @@ function updateSortButtons() {
 }
 
 function wireSummaryEvents(summary) {
-    summary.querySelector('.exact-search-clear-btn').addEventListener('click', clearFilter);
+    summary.querySelector('.exact-search-clear-btn').addEventListener('click', function() {
+        endFilterSession({ reload: false });
+    });
+    summary.querySelector('.exact-search-close-btn').addEventListener('click', function() {
+        // End session and reload so Amazon shows the original unfiltered results
+        endFilterSession({ reload: true });
+    });
 
     summary.querySelectorAll('.exact-search-sort-btn').forEach(button => {
         button.addEventListener('click', function() {
@@ -741,6 +811,7 @@ function ensureResultsSummary() {
     summary = document.createElement('div');
     summary.className = 'exact-search-summary';
     summary.innerHTML = `
+        <button type="button" class="exact-search-close-btn" title="End filter and restore original Amazon results" aria-label="End filter and restore original Amazon results">&times;</button>
         <div class="exact-search-summary-row">
             <div>
                 <strong>Exact Search Filter Active</strong><br>
@@ -1069,14 +1140,40 @@ function showResultsSummary(visibleCount, hiddenCount, searchTerm) {
     versionEl.textContent = `v${EXTENSION_VERSION}`;
 }
 
-function clearFilter() {
-    filterState.active = false;
-    filterState.hiddenResults = null;
-    filterState.amazonOrder = new Map();
+function restoreOriginalAmazonResults() {
+    beginInternalUpdate();
+
+    // Put listings back into Amazon's original capture order before clearing state
+    const ordered = Array.from(filterState.amazonOrder.entries())
+        .filter(([el]) => el && el.isConnected)
+        .sort((a, b) => a[1] - b[1]);
+
+    if (ordered.length > 0) {
+        const wrappers = ordered.map(([unit]) => getReorderWrapper(unit));
+        const { parent, wrappers: normalized } = normalizeWrappersForParent(wrappers);
+
+        if (parent && normalized.length > 1) {
+            const productSet = new Set(normalized);
+            const fragment = document.createDocumentFragment();
+            const queue = normalized.slice();
+
+            Array.from(parent.children).forEach(child => {
+                if (productSet.has(child)) {
+                    const next = queue.shift();
+                    if (next) {
+                        fragment.appendChild(next);
+                    }
+                } else {
+                    fragment.appendChild(child);
+                }
+            });
+
+            queue.forEach(wrapper => fragment.appendChild(wrapper));
+            parent.appendChild(fragment);
+        }
+    }
+
     clearSortStyles();
-    chrome.storage.local.set({ filterEnabled: false, activeFilterTabId: null });
-    cleanupFilteringWatchers();
-    closeHiddenResultsModal();
 
     document.querySelectorAll('.exact-search-hidden, .exact-search-match').forEach(el => {
         el.classList.remove('exact-search-hidden', 'exact-search-match');
@@ -1086,6 +1183,7 @@ function clearFilter() {
         el.style.padding = '';
         el.style.margin = '';
         el.style.backgroundColor = '';
+        el.style.order = '';
         delete el.dataset.exactSearchHighlighted;
     });
 
@@ -1098,6 +1196,30 @@ function clearFilter() {
             parent.normalize();
         }
     });
+
+    closeHiddenResultsModal();
+    endInternalUpdate();
+}
+
+function clearFilter(notifyBackground) {
+    filterState.active = false;
+    cleanupFilteringWatchers();
+
+    restoreOriginalAmazonResults();
+
+    filterState.hiddenResults = null;
+    filterState.amazonOrder = new Map();
+    filterState.sessionAmazonKey = null;
+
+    if (notifyBackground !== false) {
+        chrome.runtime.sendMessage({ action: 'endFilterSession' }).catch(() => {});
+    } else {
+        chrome.storage.local.set({
+            filterEnabled: false,
+            activeFilterTabId: null,
+            activeFilterAmazonKey: null
+        });
+    }
 }
 
 function mutationIsRelevant(mutations) {

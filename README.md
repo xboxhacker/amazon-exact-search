@@ -4,7 +4,7 @@ A Chrome extension that filters Amazon search results so you only see listings w
 
 Amazon often shows unrelated items in search results (for example, searching for **M6** screws and getting **M4** or **M5** listings). This extension hides those mismatches and helps you find the right part faster.
 
-**Version:** 1.4.0 · **Manifest:** V3 · **Site:** [amazon.com](https://www.amazon.com) search pages
+**Version:** 1.5.1 · **Manifest:** V3 · **Site:** [amazon.com](https://www.amazon.com) search pages
 
 ---
 
@@ -18,6 +18,8 @@ Amazon often shows unrelated items in search results (for example, searching for
 - **Normal mode** — filter only, keep Amazon’s original result order
 - **Hidden results viewer** — click the hidden count to review filtered-out listings in a popup
 - **Off by default** — filtering only runs when you click **Search Amazon** or **Filter Current Results**
+- **Auto-ends session** when you leave search results (cart, product page) or run a new Amazon search
+- **X button** on the filter banner to end the exact-search session immediately
 
 ---
 
