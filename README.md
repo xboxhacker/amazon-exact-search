@@ -4,7 +4,7 @@ A Chrome extension that filters Amazon search results so you only see listings w
 
 Amazon often shows unrelated items in search results (for example, searching for **M6** screws and getting **M4** or **M5** listings). This extension hides those mismatches and helps you find the right part faster.
 
-**Version:** 1.5.1 · **Manifest:** V3 · **Site:** [amazon.com](https://www.amazon.com) search pages
+**Version:** 1.6.0 · **Manifest:** V3 · **Site:** [amazon.com](https://www.amazon.com) search pages
 
 ---
 
@@ -12,6 +12,7 @@ Amazon often shows unrelated items in search results (for example, searching for
 
 - **Exact title filtering** — every required search word must appear in the product title
 - **Strict hardware sizing** — `M6` does not match `M4`, `M5`, or `M60`
+- **Inch measurements** — `6` matches `6"`, `6'`, `6 inch`, and `6-Inch` in titles
 - **Quoted phrases** — `"4mm OD"` must appear together in the title, not as separate words
 - **Exclusions** — prefix with `-` to hide titles containing a term (e.g. `-4mm`, `-M4`)
 - **Optional sorting** — lowest price, or fastest delivery then lowest price

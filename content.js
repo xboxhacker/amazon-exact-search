@@ -24,7 +24,8 @@ const filterState = {
     debounceTimer: null,
     retryTimers: [],
     sessionAmazonKey: null,
-    navWatcherStarted: false
+    navWatcherStarted: false,
+    lastSortPreview: ''
 };
 
 function beginInternalUpdate() {
@@ -358,21 +359,47 @@ function parsePriceText(text) {
 }
 
 function isPerUnitPriceBlock(priceEl) {
-    return /\/\s*count|per\s+count|\/\s*unit|per\s+unit|per\s+item/i.test(priceEl.textContent);
+    const text = priceEl.textContent || '';
+    return /\/\s*count|per\s+count|\/\s*unit|per\s+unit|per\s+item|\/\s*month|with\s+prime/i.test(text);
 }
 
 function getProductPrice(product) {
-    const candidates = [];
+    const preferredSelectors = [
+        '.a-price[data-a-size="xl"][data-a-color="base"] .a-offscreen',
+        '.a-price[data-a-size="l"][data-a-color="base"] .a-offscreen',
+        '.a-price[data-a-color="base"] .a-offscreen',
+        '.a-price[data-a-size="xl"] .a-offscreen'
+    ];
 
+    for (const selector of preferredSelectors) {
+        const el = product.querySelector(selector);
+        if (!el) {
+            continue;
+        }
+        const priceEl = el.closest('.a-price');
+        if (priceEl && isPerUnitPriceBlock(priceEl)) {
+            continue;
+        }
+        const value = parsePriceText(el.textContent);
+        if (value !== null && value >= 1) {
+            return value;
+        }
+    }
+
+    const candidates = [];
     product.querySelectorAll('.a-price').forEach(priceEl => {
         if (isPerUnitPriceBlock(priceEl)) {
+            return;
+        }
+        // Skip secondary/strikethrough list prices when a base price exists
+        if (priceEl.getAttribute('data-a-strike') === 'true') {
             return;
         }
 
         const offscreen = priceEl.querySelector('.a-offscreen');
         if (offscreen) {
             const value = parsePriceText(offscreen.textContent);
-            if (value !== null) {
+            if (value !== null && value >= 1) {
                 candidates.push(value);
             }
             return;
@@ -382,30 +409,97 @@ function getProductPrice(product) {
         const fraction = priceEl.querySelector('.a-price-fraction');
         if (whole) {
             const value = parsePriceText(`${whole.textContent}${fraction ? fraction.textContent : ''}`);
-            if (value !== null) {
+            if (value !== null && value >= 1) {
                 candidates.push(value);
             }
         }
     });
 
     if (candidates.length > 0) {
-        const mainPrices = candidates.filter(value => value >= 1);
-        if (mainPrices.length > 0) {
-            return Math.min(...mainPrices);
-        }
         return Math.min(...candidates);
     }
 
-    // Fallback: use the largest price on the card (avoids $0.09/count-style values)
-    let highest = null;
-    product.querySelectorAll('.a-price .a-offscreen, .a-color-price .a-offscreen').forEach(el => {
-        const value = parsePriceText(el.textContent);
-        if (value !== null && (highest === null || value > highest)) {
-            highest = value;
+    return null;
+}
+
+function getCardToSort(product) {
+    return getSortableUnit(product);
+}
+
+function getResultListContainer() {
+    const results = Array.from(document.querySelectorAll('[data-component-type="s-search-result"]'));
+    if (results.length === 0) {
+        return null;
+    }
+
+    let node = results[0];
+    while (node.parentElement) {
+        const parent = node.parentElement;
+        const productWrappers = Array.from(parent.children).filter(child =>
+            child.matches('[data-component-type="s-search-result"]') ||
+            child.querySelector('[data-component-type="s-search-result"]')
+        );
+
+        if (productWrappers.length >= 2) {
+            return {
+                parent,
+                wrapperFor(unit) {
+                    let wrapper = unit;
+                    while (wrapper.parentElement && wrapper.parentElement !== parent) {
+                        wrapper = wrapper.parentElement;
+                    }
+                    return wrapper;
+                },
+                isProductWrapper(child) {
+                    return child.matches('[data-component-type="s-search-result"]') ||
+                        !!child.querySelector('[data-component-type="s-search-result"]');
+                }
+            };
         }
+
+        node = parent;
+    }
+
+    return null;
+}
+
+function getSortColumnWrapper(unit) {
+    const container = getResultListContainer();
+    if (container) {
+        return container.wrapperFor(unit);
+    }
+    return getReorderWrapper(unit);
+}
+
+/**
+ * Sort in place using flex order on Amazon's grid column wrappers.
+ * Keeps the original compact multi-column card layout.
+ */
+function applyInPlaceSortOrder(container, sortedItems) {
+    if (!container) {
+        return;
+    }
+
+    const { parent, isProductWrapper } = container;
+    const matchedWrappers = new Set(sortedItems.map(item => item.wrapper));
+
+    parent.setAttribute('data-exact-search-sortable', 'true');
+    parent.style.setProperty('display', 'flex', 'important');
+    parent.style.setProperty('flex-wrap', 'wrap', 'important');
+    parent.style.setProperty('align-items', 'flex-start', 'important');
+
+    sortedItems.forEach((item, index) => {
+        item.wrapper.style.setProperty('order', String(index), 'important');
+        item.wrapper.style.removeProperty('width');
+        item.wrapper.style.removeProperty('height');
+        item.unit.style.setProperty('order', String(index), 'important');
     });
 
-    return highest;
+    Array.from(parent.children).forEach(child => {
+        if (isProductWrapper(child) && !matchedWrappers.has(child)) {
+            child.style.setProperty('order', '9999', 'important');
+        }
+    });
 }
 
 function daysUntilDate(dateStr) {
@@ -579,11 +673,14 @@ function compareMatchedItems(a, b, sortMode) {
         return a.originalIndex - b.originalIndex;
     }
 
-    const priceA = a.price ?? Infinity;
-    const priceB = b.price ?? Infinity;
+    const priceA = typeof a.price === 'number' ? a.price : Number.POSITIVE_INFINITY;
+    const priceB = typeof b.price === 'number' ? b.price : Number.POSITIVE_INFINITY;
 
     if (sortMode === 'price') {
-        return priceA - priceB;
+        if (priceA !== priceB) {
+            return priceA - priceB;
+        }
+        return a.originalIndex - b.originalIndex;
     }
 
     const hasDeliveryA = a.deliveryDays !== null && a.deliveryDays !== undefined;
@@ -601,7 +698,11 @@ function compareMatchedItems(a, b, sortMode) {
         return a.deliveryDays - b.deliveryDays;
     }
 
-    return priceA - priceB;
+    if (priceA !== priceB) {
+        return priceA - priceB;
+    }
+
+    return a.originalIndex - b.originalIndex;
 }
 
 function getResultsRowParent() {
@@ -651,35 +752,24 @@ function normalizeWrappersForParent(wrappers) {
 }
 
 function clearSortStyles() {
+    document.querySelectorAll('[data-exact-search-sortable="true"]').forEach(parent => {
+        parent.style.removeProperty('display');
+        parent.style.removeProperty('flex-wrap');
+        parent.style.removeProperty('flex-direction');
+        parent.style.removeProperty('align-items');
+        parent.removeAttribute('data-exact-search-sortable');
+
+        Array.from(parent.children).forEach(child => {
+            child.style.removeProperty('order');
+            child.style.removeProperty('width');
+            child.style.removeProperty('height');
+        });
+    });
+
     document.querySelectorAll('[data-component-type="s-search-result"]').forEach(result => {
-        result.style.order = '';
-    });
-
-    const listParent = document.querySelector('[data-exact-search-sortable="true"]');
-    if (listParent) {
-        listParent.style.display = '';
-        listParent.style.flexDirection = '';
-        listParent.removeAttribute('data-exact-search-sortable');
-    }
-}
-
-function applyFlexSortOrder(sortedUnits) {
-    const listParent = getResultsRowParent();
-    if (!listParent) {
-        return;
-    }
-
-    listParent.setAttribute('data-exact-search-sortable', 'true');
-    listParent.style.display = 'flex';
-    listParent.style.flexDirection = 'column';
-
-    sortedUnits.forEach((unit, index) => {
-        unit.style.order = String(index);
-    });
-
-    document.querySelectorAll('.exact-search-hidden').forEach(hidden => {
-        const unit = getSortableUnit(hidden);
-        unit.style.order = String(sortedUnits.length + 1);
+        result.style.removeProperty('order');
+        result.style.removeProperty('width');
+        result.style.removeProperty('height');
     });
 }
 
@@ -720,12 +810,20 @@ function reorderProductWrappers(parent, sortedWrappers) {
 
 function sortVisibleMatches(sortMode) {
     if (sortMode === 'amazon') {
+        beginInternalUpdate();
         clearSortStyles();
+        endInternalUpdate();
         return;
     }
 
     const matches = Array.from(document.querySelectorAll('.exact-search-match'));
     if (matches.length < 2) {
+        clearSortStyles();
+        return;
+    }
+
+    const container = getResultListContainer();
+    if (!container) {
         return;
     }
 
@@ -741,7 +839,7 @@ function sortVisibleMatches(sortMode) {
 
         items.push({
             unit,
-            wrapper: getReorderWrapper(unit),
+            wrapper: getSortColumnWrapper(unit),
             price: getProductPrice(unit),
             deliveryDays: getDeliveryDays(unit),
             originalIndex: filterState.amazonOrder.get(unit) ?? Number.MAX_SAFE_INTEGER
@@ -754,13 +852,18 @@ function sortVisibleMatches(sortMode) {
 
     items.sort((a, b) => compareMatchedItems(a, b, sortMode));
 
-    const sortedUnits = items.map(item => item.unit);
-    applyFlexSortOrder(sortedUnits);
+    filterState.lastSortPreview = items
+        .slice(0, 5)
+        .map(item => (item.price == null ? '?' : `$${item.price.toFixed(2)}`))
+        .join(' → ');
 
-    const { parent, wrappers } = normalizeWrappersForParent(items.map(item => item.wrapper));
-    if (parent && wrappers.length > 1) {
-        reorderProductWrappers(parent, wrappers);
+    beginInternalUpdate();
+    try {
+        applyInPlaceSortOrder(container, items);
+    } catch (error) {
+        console.error('Exact Search: sort failed', error);
     }
+    endInternalUpdate();
 }
 
 function setSortMode(sortMode) {
@@ -769,6 +872,17 @@ function setSortMode(sortMode) {
     updateSortButtons();
     beginInternalUpdate();
     sortVisibleMatches(sortMode);
+
+    const detail = document.querySelector('.exact-search-summary-detail');
+    if (detail) {
+        const base = detail.textContent.split(' · Price order:')[0];
+        if (sortMode !== 'amazon' && filterState.lastSortPreview) {
+            detail.textContent = `${base} · Price order: ${filterState.lastSortPreview}`;
+        } else {
+            detail.textContent = base;
+        }
+    }
+
     endInternalUpdate();
 }
 
@@ -922,6 +1036,25 @@ function phraseAppearsInTitle(title, phrase, caseSensitive) {
     return title.toLowerCase().includes(phrase.toLowerCase());
 }
 
+function parseMeasurementNumber(term) {
+    const match = term.match(/^(\d+(?:\.\d+)?)\s*(?:"|''|inch|inches|in|-?inch)?$/i);
+    if (!match) {
+        return null;
+    }
+    return match[1];
+}
+
+function buildMeasurementRegex(num, flags) {
+    const n = escapeRegExp(num);
+    const patterns = [
+        `(?<![0-9])${n}\\s*"`,
+        `(?<![0-9])${n}\\s*'`,
+        `(?<![0-9])${n}\\s*-?\\s*(?:inch|inches|in)\\b`,
+        `(?<![0-9])${n}(?![0-9])`
+    ];
+    return new RegExp(`(?:${patterns.join('|')})`, flags);
+}
+
 function termAppearsInTitle(title, term, caseSensitive) {
     const flags = caseSensitive ? '' : 'i';
 
@@ -934,7 +1067,12 @@ function termAppearsInTitle(title, term, caseSensitive) {
         return regex.test(title);
     }
 
-    // Inch/fraction sizes like 1/4", 3/8, #8
+    // Inch measurements: 6, 6", 6 inch, 1/4", 3/8 — match equivalent forms in title
+    const measureNum = parseMeasurementNumber(term);
+    if (measureNum) {
+        return buildMeasurementRegex(measureNum, flags).test(title);
+    }
+
     if (/^#?\d+([./]\d+)?"?$/.test(term)) {
         const regex = new RegExp(
             `(?<![0-9A-Za-z./#])${escapeRegExp(term.replace(/"/g, '"?'))}(?![0-9A-Za-z])`,
@@ -955,6 +1093,182 @@ function termAppearsInTitle(title, term, caseSensitive) {
     // Regular words — whole word only; allow simple plurals (screw ↔ screws)
     const regex = new RegExp(`\\b${escapeRegExp(term)}(?:s|es)?\\b`, flags);
     return regex.test(title);
+}
+
+function setElementVisible(el, visible) {
+    if (!el) {
+        return;
+    }
+
+    if (visible) {
+        el.classList.remove('exact-search-hidden');
+        el.style.display = '';
+    } else {
+        el.classList.add('exact-search-hidden');
+        el.style.display = 'none';
+    }
+}
+
+function setProductVisibility(product, visible) {
+    const unit = getSortableUnit(product);
+
+    // Only hide the product card itself. Hiding Amazon's parent wrappers
+    // also hides sibling matches that share the same batch container.
+    setElementVisible(product, visible);
+    if (unit !== product) {
+        setElementVisible(unit, visible);
+    }
+}
+
+function revealHiddenMatchAncestors() {
+    document.querySelectorAll('.exact-search-match').forEach(match => {
+        setElementVisible(match, true);
+        let node = match.parentElement;
+        while (node && node !== document.body) {
+            if (node.classList.contains('exact-search-hidden') || node.style.display === 'none') {
+                setElementVisible(node, true);
+            }
+            node = node.parentElement;
+        }
+    });
+}
+
+function getResultsSlot() {
+    return document.querySelector('.s-main-slot') ||
+        document.querySelector('[data-component-type="s-search-results"]');
+}
+
+function normalizeUiText(text) {
+    return (text || '').replace(/\s+/g, ' ').trim();
+}
+
+function isLazyLoadLabel(text) {
+    const value = normalizeUiText(text);
+    return /^(more results|see more results|show more results)$/i.test(value);
+}
+
+function slotChildHasProductCard(child) {
+    return child.matches('[data-component-type="s-search-result"]') ||
+        !!child.querySelector('[data-component-type="s-search-result"]');
+}
+
+function getSlotDirectChild(node, slot) {
+    let current = node;
+    while (current && current.parentElement && current.parentElement !== slot) {
+        current = current.parentElement;
+    }
+    return current && current.parentElement === slot ? current : null;
+}
+
+function hideIfPlaceholderHost(el, slot) {
+    if (!el || el.classList.contains('exact-search-summary') ||
+        el.classList.contains('exact-search-results-floor') ||
+        el.classList.contains('exact-search-match') ||
+        el.querySelector('.exact-search-match')) {
+        return;
+    }
+
+    if (slotChildHasProductCard(el)) {
+        return;
+    }
+
+    el.classList.add('exact-search-lazy-suppressed');
+}
+
+/**
+ * Amazon infinite-scrolls when filtered cards collapse the page and its
+ * "More results" sentinels stay in the viewport. Hide those loaders while
+ * the filter is active so it cannot keep fetching forever.
+ */
+function suppressAmazonLazyLoad() {
+    document.documentElement.classList.add('exact-search-filtering');
+    document.body.classList.add('exact-search-filtering');
+
+    const slot = getResultsSlot();
+    if (!slot) {
+        return;
+    }
+
+    slot.classList.add('exact-search-filtering-slot');
+
+    slot.querySelectorAll('.s-result-list-placeholder, .s-latency-msg, [data-component-type="s-result-list-placeholder"]').forEach(el => {
+        hideIfPlaceholderHost(getSlotDirectChild(el, slot) || el, slot);
+    });
+
+    Array.from(slot.children).forEach(child => {
+        const text = normalizeUiText(child.textContent);
+        const looksLikeLoader = child.classList.contains('s-result-list-placeholder') ||
+            child.getAttribute('data-component-type') === 's-result-list-placeholder' ||
+            child.querySelector('.s-result-list-placeholder') ||
+            isLazyLoadLabel(text) ||
+            (/more results/i.test(text) && text.length < 80);
+
+        if (looksLikeLoader) {
+            hideIfPlaceholderHost(child, slot);
+        }
+    });
+
+    slot.querySelectorAll('h1, h2, h3, h4, span, div, p, a, button').forEach(el => {
+        if (el.closest('.exact-search-summary, .exact-search-match, .exact-search-hidden-modal')) {
+            return;
+        }
+
+        if (!isLazyLoadLabel(el.textContent)) {
+            return;
+        }
+
+        const child = getSlotDirectChild(el, slot);
+        hideIfPlaceholderHost(child || el, slot);
+        if (child && slotChildHasProductCard(child)) {
+            el.classList.add('exact-search-lazy-suppressed');
+        }
+    });
+}
+
+/**
+ * Keep the results area tall enough that Amazon's scroll sentinel stays
+ * below the fold even after most listings are hidden.
+ */
+function ensureResultsFloor() {
+    const slot = getResultsSlot();
+    if (!slot) {
+        return;
+    }
+
+    let floor = slot.querySelector(':scope > .exact-search-results-floor');
+    if (!floor) {
+        floor = document.createElement('div');
+        floor.className = 'exact-search-results-floor';
+        floor.setAttribute('aria-hidden', 'true');
+        slot.appendChild(floor);
+    }
+
+    const viewportNeed = Math.max(window.innerHeight, 900);
+    const slotTop = slot.getBoundingClientRect().top + window.scrollY;
+    const contentBottom = Array.from(slot.children).reduce((max, child) => {
+        if (child.classList.contains('exact-search-results-floor') ||
+            child.classList.contains('exact-search-lazy-suppressed') ||
+            child.classList.contains('exact-search-hidden')) {
+            return max;
+        }
+        return Math.max(max, child.getBoundingClientRect().bottom + window.scrollY);
+    }, slotTop);
+
+    const visibleContentHeight = Math.max(0, contentBottom - slotTop);
+    const floorHeight = Math.max(viewportNeed - visibleContentHeight + 200, 400);
+    floor.style.height = `${floorHeight}px`;
+}
+
+function clearLazyLoadSuppression() {
+    document.documentElement.classList.remove('exact-search-filtering');
+    document.body.classList.remove('exact-search-filtering');
+    document.querySelectorAll('.exact-search-filtering-slot').forEach(el => {
+        el.classList.remove('exact-search-filtering-slot');
+    });
+    document.querySelectorAll('.exact-search-lazy-suppressed').forEach(el => {
+        el.classList.remove('exact-search-lazy-suppressed');
+    });
+    document.querySelectorAll('.exact-search-results-floor').forEach(el => el.remove());
 }
 
 function filterAmazonResults(searchTerm, caseSensitive, highlightMatch) {
@@ -980,8 +1294,7 @@ function filterAmazonResults(searchTerm, caseSensitive, highlightMatch) {
             const titleInfo = getProductTitle(product);
 
             if (!titleInfo) {
-                product.classList.add('exact-search-hidden');
-                product.style.display = 'none';
+                setProductVisibility(product, false);
                 hiddenItems.push(buildHiddenItem(product, titleInfo));
                 hiddenCount++;
                 return;
@@ -990,8 +1303,7 @@ function filterAmazonResults(searchTerm, caseSensitive, highlightMatch) {
             const isMatch = titleMatchesSearch(titleInfo.text, searchTerm, caseSensitive);
 
             if (isMatch) {
-                product.classList.remove('exact-search-hidden');
-                product.style.display = '';
+                setProductVisibility(product, true);
                 product.classList.add('exact-search-match');
                 visibleCount++;
 
@@ -1002,15 +1314,18 @@ function filterAmazonResults(searchTerm, caseSensitive, highlightMatch) {
 
                 addMatchBadge(product);
             } else {
-                product.classList.add('exact-search-hidden');
+                setProductVisibility(product, false);
                 product.classList.remove('exact-search-match');
-                product.style.display = 'none';
                 delete product.dataset.exactSearchHighlighted;
                 hiddenItems.push(buildHiddenItem(product, titleInfo));
                 hiddenCount++;
             }
         });
 
+        revealHiddenMatchAncestors();
+        visibleCount = document.querySelectorAll('.exact-search-match').length;
+        suppressAmazonLazyLoad();
+        ensureResultsFloor();
         saveHiddenResults(searchTerm, hiddenItems);
         sortVisibleMatches(filterState.sortMode);
         showResultsSummary(visibleCount, hiddenCount, searchTerm);
@@ -1033,11 +1348,14 @@ function highlightText(element, searchTerm, caseSensitive) {
     });
 
     words.forEach(part => {
-        const flags = caseSensitive ? 'g' : 'gi';
         let pattern;
 
         if (/^M\d+$/i.test(part.text)) {
             pattern = `(?<![A-Za-z0-9])${escapeRegExp(part.text)}(?![0-9A-Za-z])`;
+        } else if (parseMeasurementNumber(part.text)) {
+            const num = parseMeasurementNumber(part.text);
+            const n = escapeRegExp(num);
+            pattern = `(?<![0-9])${n}\\s*"|(?<![0-9])${n}\\s*'|(?<![0-9])${n}\\s*-?\\s*(?:inch|inches|in)\\b|(?<![0-9])${n}(?![0-9])`;
         } else {
             pattern = `\\b${escapeRegExp(part.text)}(?:s|es)?\\b`;
         }
@@ -1117,8 +1435,11 @@ function addMatchBadge(product) {
 
 function showResultsSummary(visibleCount, hiddenCount, searchTerm) {
     const summary = ensureResultsSummary();
-    summary.querySelector('.exact-search-summary-detail').textContent =
-        `Showing only titles matching: "${searchTerm}" (quoted text must appear exactly)`;
+    let detail = `Showing only titles matching: "${searchTerm}" (quoted text must appear exactly)`;
+    if (filterState.sortMode !== 'amazon' && filterState.lastSortPreview) {
+        detail += ` · Price order: ${filterState.lastSortPreview}`;
+    }
+    summary.querySelector('.exact-search-summary-detail').textContent = detail;
     summary.querySelector('.exact-search-match-count').textContent = `${visibleCount} matches`;
 
     const hiddenWrap = summary.querySelector('.exact-search-hidden-count-wrap');
@@ -1143,37 +1464,8 @@ function showResultsSummary(visibleCount, hiddenCount, searchTerm) {
 function restoreOriginalAmazonResults() {
     beginInternalUpdate();
 
-    // Put listings back into Amazon's original capture order before clearing state
-    const ordered = Array.from(filterState.amazonOrder.entries())
-        .filter(([el]) => el && el.isConnected)
-        .sort((a, b) => a[1] - b[1]);
-
-    if (ordered.length > 0) {
-        const wrappers = ordered.map(([unit]) => getReorderWrapper(unit));
-        const { parent, wrappers: normalized } = normalizeWrappersForParent(wrappers);
-
-        if (parent && normalized.length > 1) {
-            const productSet = new Set(normalized);
-            const fragment = document.createDocumentFragment();
-            const queue = normalized.slice();
-
-            Array.from(parent.children).forEach(child => {
-                if (productSet.has(child)) {
-                    const next = queue.shift();
-                    if (next) {
-                        fragment.appendChild(next);
-                    }
-                } else {
-                    fragment.appendChild(child);
-                }
-            });
-
-            queue.forEach(wrapper => fragment.appendChild(wrapper));
-            parent.appendChild(fragment);
-        }
-    }
-
     clearSortStyles();
+    clearLazyLoadSuppression();
 
     document.querySelectorAll('.exact-search-hidden, .exact-search-match').forEach(el => {
         el.classList.remove('exact-search-hidden', 'exact-search-match');
@@ -1183,7 +1475,9 @@ function restoreOriginalAmazonResults() {
         el.style.padding = '';
         el.style.margin = '';
         el.style.backgroundColor = '';
-        el.style.order = '';
+        el.style.removeProperty('order');
+        el.style.removeProperty('width');
+        el.style.removeProperty('height');
         delete el.dataset.exactSearchHighlighted;
     });
 
@@ -1222,33 +1516,49 @@ function clearFilter(notifyBackground) {
     }
 }
 
-function mutationIsRelevant(mutations) {
+function isOurUiNode(node) {
+    if (!node || node.nodeType !== Node.ELEMENT_NODE) {
+        return false;
+    }
+
+    return !!(
+        node.classList?.contains('exact-search-summary') ||
+        node.classList?.contains('exact-match-badge') ||
+        node.classList?.contains('exact-search-highlight') ||
+        node.classList?.contains('exact-search-hidden-modal') ||
+        node.classList?.contains('exact-search-results-floor') ||
+        node.classList?.contains('exact-search-lazy-suppressed') ||
+        node.closest?.('.exact-search-summary') ||
+        node.closest?.('.exact-search-hidden-modal') ||
+        node.closest?.('.exact-search-results-floor')
+    );
+}
+
+function nodeContainsProduct(node) {
+    if (!node || node.nodeType !== Node.ELEMENT_NODE) {
+        return false;
+    }
+
+    return node.matches?.('[data-component-type="s-search-result"], .s-result-item[data-asin]') ||
+        !!node.querySelector?.('[data-component-type="s-search-result"], .s-result-item[data-asin]');
+}
+
+function mutationHasNewProducts(mutations) {
     return mutations.some(mutation => {
-        const nodes = [...mutation.addedNodes, ...mutation.removedNodes];
-
-        for (const node of nodes) {
-            if (node.nodeType !== Node.ELEMENT_NODE) {
-                continue;
-            }
-
-            if (node.classList?.contains('exact-search-summary') ||
-                node.classList?.contains('exact-match-badge') ||
-                node.classList?.contains('exact-search-highlight') ||
-                node.classList?.contains('exact-search-hidden-modal') ||
-                node.closest?.('.exact-search-summary') ||
-                node.closest?.('.exact-search-hidden-modal')) {
-                return false;
-            }
-        }
-
-        if (mutation.target.closest?.('.exact-search-summary') ||
-            mutation.target.closest?.('.exact-search-hidden-modal') ||
-            mutation.target.closest?.('.exact-search-highlight') ||
-            mutation.target.closest?.('.exact-match-badge')) {
+        if (isOurUiNode(mutation.target)) {
             return false;
         }
 
-        return true;
+        for (const node of mutation.addedNodes) {
+            if (isOurUiNode(node)) {
+                continue;
+            }
+            if (nodeContainsProduct(node)) {
+                return true;
+            }
+        }
+
+        return false;
     });
 }
 
@@ -1258,7 +1568,32 @@ function observePageChanges(searchTerm, caseSensitive, highlightMatch) {
     }
 
     filterState.observer = new MutationObserver(function(mutations) {
-        if (!filterState.active || filterState.isInternalUpdate || !mutationIsRelevant(mutations)) {
+        if (!filterState.active || filterState.isInternalUpdate) {
+            return;
+        }
+
+        // Always re-suppress loaders if Amazon injects more of them
+        const maybeLoaders = mutations.some(mutation =>
+            [...mutation.addedNodes].some(node => {
+                if (!node || node.nodeType !== Node.ELEMENT_NODE || isOurUiNode(node)) {
+                    return false;
+                }
+                const text = (node.textContent || '').replace(/\s+/g, ' ').trim();
+                return node.classList?.contains('s-result-list-placeholder') ||
+                    /^more results$/i.test(text) ||
+                    text.includes('More results');
+            })
+        );
+
+        if (maybeLoaders) {
+            beginInternalUpdate();
+            suppressAmazonLazyLoad();
+            ensureResultsFloor();
+            endInternalUpdate();
+        }
+
+        // Only re-filter when real product cards appear (not placeholder spam)
+        if (!mutationHasNewProducts(mutations)) {
             return;
         }
 
