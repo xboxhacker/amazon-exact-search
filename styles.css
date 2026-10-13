@@ -148,6 +148,9 @@
     margin: 0 !important;
     background-color: #f0f8f0;
     box-sizing: border-box;
+    overflow: visible !important;
+    height: auto !important;
+    max-height: none !important;
 }
 
 .exact-match-badge {

@@ -19,25 +19,95 @@ function normalizeSearchKey(value) {
         .replace(/\s+/g, ' ');
 }
 
-function getAmazonSearchKeyFromUrl(url) {
+function isAliExpressHost(hostname) {
+    return /(^|\.)aliexpress\.(com|us)$/i.test(hostname || '');
+}
+
+function isAmazonHost(hostname) {
+    return /(^|\.)amazon\.com$/i.test(hostname || '');
+}
+
+function getSiteFromUrl(url) {
     try {
         const parsed = new URL(url);
-        if (!/amazon\.com/i.test(parsed.hostname)) {
-            return null;
+        if (isAliExpressHost(parsed.hostname)) {
+            return 'aliexpress';
         }
-
-        if (parsed.pathname !== '/s' && !parsed.pathname.startsWith('/s/')) {
-            return null;
+        if (isAmazonHost(parsed.hostname)) {
+            return 'amazon';
         }
-
-        return normalizeSearchKey(parsed.searchParams.get('k') || '');
     } catch (error) {
         return null;
     }
+
+    return null;
 }
 
-function isAmazonSearchUrl(url) {
-    return getAmazonSearchKeyFromUrl(url) !== null;
+function getAliExpressHostFromUrl(url) {
+    try {
+        const parsed = new URL(url);
+        return /aliexpress\.us$/i.test(parsed.hostname.replace(/^www\./, '')) ?
+            'www.aliexpress.us' : 'www.aliexpress.com';
+    } catch (error) {
+        return 'www.aliexpress.com';
+    }
+}
+
+function getSearchKeyFromUrl(url) {
+    try {
+        const parsed = new URL(url);
+
+        if (isAmazonHost(parsed.hostname)) {
+            if (parsed.pathname !== '/s' && !parsed.pathname.startsWith('/s/')) {
+                return null;
+            }
+            return normalizeSearchKey(parsed.searchParams.get('k') || '');
+        }
+
+        if (isAliExpressHost(parsed.hostname)) {
+            const searchText = parsed.searchParams.get('SearchText') ||
+                parsed.searchParams.get('searchText') ||
+                parsed.searchParams.get('q');
+            if (searchText) {
+                return normalizeSearchKey(searchText);
+            }
+
+            const wholesale = parsed.pathname.match(/\/w\/wholesale-(.+)\.html/i);
+            if (wholesale) {
+                return normalizeSearchKey(wholesale[1].replace(/-/g, ' '));
+            }
+
+            if (/\/wholesale/i.test(parsed.pathname)) {
+                return '';
+            }
+
+            return null;
+        }
+    } catch (error) {
+        return null;
+    }
+
+    return null;
+}
+
+function isSearchUrl(url) {
+    return getSearchKeyFromUrl(url) !== null;
+}
+
+function buildSearchUrl(settings) {
+    const term = settings.searchTerm || '';
+    if (settings.targetSite === 'aliexpress') {
+        const host = settings.aliexpressHost === 'www.aliexpress.us' ?
+            'www.aliexpress.us' : 'www.aliexpress.com';
+        const slug = term
+            .replace(/[^\w\s-]/g, ' ')
+            .trim()
+            .replace(/\s+/g, '-')
+            .replace(/-+/g, '-') || 'search';
+        return `https://${host}/w/wholesale-${slug}.html?g=y&SearchText=${encodeURIComponent(term)}`;
+    }
+
+    return `https://www.amazon.com/s?k=${encodeURIComponent(term)}`;
 }
 
 async function sendFilterToTab(tabId, settings) {
@@ -61,15 +131,17 @@ async function sendFilterToTab(tabId, settings) {
         });
         await chrome.tabs.sendMessage(tabId, message);
     } catch (error) {
-        console.error('Exact Search: could not reach Amazon tab', error);
+        console.error('Exact Search: could not reach search tab', error);
     }
 }
 
-function storeFilterState(tabId, settings, amazonKey, callback) {
+function storeFilterState(tabId, settings, searchKey, callback) {
     chrome.storage.local.set({
         filterEnabled: true,
         activeFilterTabId: tabId,
-        activeFilterAmazonKey: normalizeSearchKey(amazonKey || settings.searchTerm || ''),
+        activeFilterAmazonKey: normalizeSearchKey(searchKey || settings.searchTerm || ''),
+        targetSite: settings.targetSite || 'amazon',
+        aliexpressHost: settings.aliexpressHost || 'www.aliexpress.com',
         searchTerm: settings.searchTerm,
         caseSensitive: settings.caseSensitive ?? false,
         highlightMatch: settings.highlightMatch ?? true,
@@ -112,7 +184,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
     if (request.action === 'searchAndFilter') {
         const settings = request.settings || {};
-        const searchUrl = `https://www.amazon.com/s?k=${encodeURIComponent(settings.searchTerm)}`;
+        const searchUrl = buildSearchUrl(settings);
 
         chrome.tabs.create({ url: searchUrl }, (tab) => {
             storeFilterState(tab.id, settings, settings.searchTerm, () => {
@@ -126,8 +198,16 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         const settings = request.settings || {};
 
         chrome.tabs.get(request.tabId, (tab) => {
-            const amazonKey = getAmazonSearchKeyFromUrl(tab?.url || '') || settings.searchTerm;
-            storeFilterState(request.tabId, settings, amazonKey, async () => {
+            const detectedSite = getSiteFromUrl(tab?.url || '');
+            if (detectedSite) {
+                settings.targetSite = detectedSite;
+            }
+            if (detectedSite === 'aliexpress') {
+                settings.aliexpressHost = getAliExpressHostFromUrl(tab.url);
+            }
+
+            const searchKey = getSearchKeyFromUrl(tab?.url || '') || settings.searchTerm;
+            storeFilterState(request.tabId, settings, searchKey, async () => {
                 await sendFilterToTab(request.tabId, settings);
                 sendResponse({ ok: true });
             });
@@ -183,18 +263,16 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
                 return;
             }
 
-            // Left Amazon search results (cart, product page, home, etc.)
-            if (!isAmazonSearchUrl(url)) {
+            if (!isSearchUrl(url)) {
                 endFilterSession(() => {
                     notifyTabFilterEnded(tabId);
                 });
                 return;
             }
 
-            // Still on /s, but Amazon search query changed (typed a new search in Amazon's bar)
-            const currentKey = getAmazonSearchKeyFromUrl(url);
+            const currentKey = getSearchKeyFromUrl(url);
             const sessionKey = normalizeSearchKey(data.activeFilterAmazonKey || '');
-            if (sessionKey && currentKey !== sessionKey) {
+            if (sessionKey && currentKey && currentKey !== sessionKey) {
                 endFilterSession(() => {
                     notifyTabFilterEnded(tabId);
                 });

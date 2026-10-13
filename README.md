@@ -1,25 +1,26 @@
-# Amazon Exact Title Search
+# Exact Title Search
 
-A Chrome extension that filters Amazon search results so you only see listings whose **titles** actually match what you searched for.
+A Chrome extension that filters Amazon and AliExpress search results so you only see listings whose **titles** actually match what you searched for.
 
-Amazon often shows unrelated items in search results (for example, searching for **M6** screws and getting **M4** or **M5** listings). This extension hides those mismatches and helps you find the right part faster.
+Amazon and AliExpress often show unrelated items in search results (for example, searching for **M6** screws and getting **M4** or **M5** listings). This extension hides those mismatches and helps you find the right part faster.
 
-**Version:** 1.6.0 · **Manifest:** V3 · **Site:** [amazon.com](https://www.amazon.com) search pages
+**Version:** 1.7.0 · **Manifest:** V3 · **Sites:** [amazon.com](https://www.amazon.com), [aliexpress.com](https://www.aliexpress.com), [aliexpress.us](https://www.aliexpress.us)
 
 ---
 
 ## Features
 
+- **Amazon or AliExpress** — toggle the site in the popup
 - **Exact title filtering** — every required search word must appear in the product title
 - **Strict hardware sizing** — `M6` does not match `M4`, `M5`, or `M60`
 - **Inch measurements** — `6` matches `6"`, `6'`, `6 inch`, and `6-Inch` in titles
 - **Quoted phrases** — `"4mm OD"` must appear together in the title, not as separate words
 - **Exclusions** — prefix with `-` to hide titles containing a term (e.g. `-4mm`, `-M4`)
 - **Optional sorting** — lowest price, or fastest delivery then lowest price
-- **Normal mode** — filter only, keep Amazon’s original result order
+- **Normal mode** — filter only, keep the site’s original result order
 - **Hidden results viewer** — click the hidden count to review filtered-out listings in a popup
-- **Off by default** — filtering only runs when you click **Search Amazon** or **Filter Current Results**
-- **Auto-ends session** when you leave search results (cart, product page) or run a new Amazon search
+- **Off by default** — filtering only runs when you click **Search** or **Filter Current Results**
+- **Auto-ends session** when you leave search results (cart, product page) or run a new search
 - **X button** on the filter banner to end the exact-search session immediately
 
 ---
@@ -33,7 +34,7 @@ Amazon often shows unrelated items in search results (for example, searching for
 5. Select the `amazon-exact-search` folder
 6. Pin the extension from the toolbar if you like
 
-After updates, click **Reload** on the extension card at `chrome://extensions`.
+After updates, click **Reload** on the extension card at `chrome://extensions`. Chrome will ask you to allow AliExpress permissions the first time after this update.
 
 ---
 
@@ -42,22 +43,25 @@ After updates, click **Reload** on the extension card at `chrome://extensions`.
 ### Search from the extension
 
 1. Click the extension icon
-2. Enter your search terms (see syntax below)
-3. Choose sort mode and options
-4. Click **Search Amazon**
+2. Choose **Amazon** or **AliExpress**
+3. Enter your search terms (see syntax below)
+4. Choose sort mode and options
+5. Click **Search Amazon** or **Search AliExpress**
 
-A new tab opens with Amazon results filtered to exact title matches.
+A new tab opens with results filtered to exact title matches.
 
-### Filter an existing Amazon search page
+If you are already on `aliexpress.us`, Search AliExpress uses that host. Otherwise it opens `aliexpress.com`.
 
-1. Run a search on Amazon normally
-2. Open the extension popup
+### Filter an existing search page
+
+1. Run a search on Amazon or AliExpress normally
+2. Open the extension popup (it detects the current site)
 3. Enter the terms you want to match in titles
 4. Click **Filter Current Results**
 
 ### Turn filtering off
 
-- On Amazon, click **Show All Results (Remove Filter)** in the filter banner, or
+- On the results page, click **Show All Results (Remove Filter)** in the filter banner, or
 - Use **Reset Filter + Hard Refresh** in the popup
 
 ---
@@ -101,7 +105,7 @@ Title must contain **M6**, the exact phrase **button head**, and **screw**. Titl
 
 | Mode | Behavior |
 |------|----------|
-| **Normal** | Filter only; keep Amazon’s order |
+| **Normal** | Filter only; keep the site’s order |
 | **Lowest price** | Cheapest matches first |
 | **Fastest ship · cheapest** | Soonest delivery first; ties broken by price |
 
@@ -111,6 +115,7 @@ Title must contain **M6**, the exact phrase **button head**, and **screw**. Titl
 
 | Option | Description |
 |--------|-------------|
+| **Amazon / AliExpress** | Which site Search opens. Auto-selects from the current tab when possible |
 | **Case Sensitive** | Match exact letter casing |
 | **Highlight Match** | Yellow highlight on matched terms in titles |
 | **Reset Filter + Hard Refresh** | Clears filter state and reloads the tab bypassing cache |
@@ -123,8 +128,8 @@ Title must contain **M6**, the exact phrase **button head**, and **screw**. Titl
 amazon-exact-search/
 ├── manifest.json       # Extension manifest (MV3)
 ├── background.js       # Tab messaging, script injection, filter state
-├── content.js          # Amazon page filtering, sorting, UI banner
-├── styles.css          # Injected styles on Amazon (banner, highlights, modal)
+├── content.js          # Page filtering, sorting, UI banner
+├── styles.css          # Injected styles (banner, highlights, modal)
 ├── popup.html          # Extension popup UI
 ├── popup.js            # Popup logic
 └── icons/
@@ -139,11 +144,12 @@ amazon-exact-search/
 
 | Permission | Why |
 |------------|-----|
-| `storage` | Save search terms, sort mode, and filter state |
-| `tabs` | Open search tabs and communicate with Amazon pages |
+| `storage` | Save search terms, sort mode, selected site, and filter state |
+| `tabs` | Open search tabs and communicate with results pages |
 | `scripting` | Inject the filter when the content script is not ready yet |
-| `activeTab` | Filter the current Amazon tab on demand |
-| `amazon.com` | Run only on Amazon search and product pages |
+| `activeTab` | Filter the current tab on demand |
+| `amazon.com` | Run on Amazon search pages |
+| `aliexpress.com` / `aliexpress.us` | Run on AliExpress search pages |
 
 No data is sent to external servers. Hidden results are kept in memory on the current page only.
 
@@ -154,9 +160,9 @@ No data is sent to external servers. Hidden results are kept in memory on the cu
 **Nothing happens after searching**
 
 1. Reload the extension at `chrome://extensions`
-2. Close old Amazon tabs and open a fresh search
+2. Close old search tabs and open a fresh search
 3. Use **Reset Filter + Hard Refresh** in the popup
-4. Make sure you clicked **Search Amazon** or **Filter Current Results** (filter is off until you do)
+4. Make sure you clicked **Search** or **Filter Current Results** (filter is off until you do)
 
 **0 matches**
 
@@ -164,15 +170,16 @@ The filter is working, but no titles matched all required terms. Try a simpler q
 
 **Extension was working, then stopped**
 
-Reload the extension and hard-refresh the Amazon tab. Chrome sometimes keeps an old copy of the content script after updates.
+Reload the extension and hard-refresh the tab. Chrome sometimes keeps an old copy of the content script after updates.
 
 ---
 
 ## Limitations
 
-- Only filters listings visible on the current Amazon search page (pagination and scroll load more; the extension re-filters as new results appear)
-- Title text is read from Amazon’s search result cards; unusual layouts may not parse correctly
-- Amazon.com only (not other Amazon marketplaces yet)
+- Only filters listings visible on the current search page (pagination and scroll load more; the extension re-filters as new results appear)
+- Title text is read from search result cards; unusual layouts may not parse correctly
+- Amazon.com, AliExpress.com, and AliExpress.us only (not other Amazon marketplaces yet)
+- AliExpress hashed CSS class names change over time; the filter prefers stable card wrappers and `/item/` links
 
 ---
 
@@ -188,6 +195,7 @@ Issues and pull requests are welcome. When reporting bugs, include:
 
 - Chrome version
 - Extension version
+- Amazon or AliExpress
 - Search query used
-- Whether you used **Search Amazon** or **Filter Current Results**
+- Whether you used **Search** or **Filter Current Results**
 - A screenshot of the filter banner (match / hidden counts) if possible

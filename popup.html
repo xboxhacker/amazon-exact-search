@@ -19,6 +19,7 @@
             border: 1px solid #ddd;
             border-radius: 4px;
             font-size: 14px;
+            box-sizing: border-box;
         }
         button {
             background: #FF9900;
@@ -36,6 +37,12 @@
         button:disabled {
             background: #ccc;
             cursor: not-allowed;
+        }
+        body.site-aliexpress button#searchBtn {
+            background: #E62E04;
+        }
+        body.site-aliexpress button#searchBtn:hover {
+            background: #c42703;
         }
         .options {
             display: flex;
@@ -62,11 +69,47 @@
             color: #888;
             font-weight: normal;
         }
+        .site-toggle {
+            display: flex;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            overflow: hidden;
+        }
+        .site-toggle-btn {
+            flex: 1;
+            background: #f3f3f3;
+            color: #333;
+            border: none;
+            border-radius: 0;
+            padding: 8px 10px;
+            font-size: 13px;
+        }
+        .site-toggle-btn:hover {
+            background: #e8e8e8;
+        }
+        .site-toggle-btn-active[data-site="amazon"] {
+            background: #FF9900;
+            color: #111;
+        }
+        .site-toggle-btn-active[data-site="aliexpress"] {
+            background: #E62E04;
+            color: #fff;
+        }
+        .site-toggle-btn-active:hover[data-site="amazon"] {
+            background: #E88B00;
+        }
+        .site-toggle-btn-active:hover[data-site="aliexpress"] {
+            background: #c42703;
+        }
     </style>
 </head>
 <body>
     <div class="container">
-        <h2>🔍 Exact Amazon Search <span id="versionLabel" class="version-label"></span></h2>
+        <h2>🔍 Exact Title Search <span id="versionLabel" class="version-label"></span></h2>
+        <div class="site-toggle" role="radiogroup" aria-label="Search site">
+            <button type="button" class="site-toggle-btn site-toggle-btn-active" data-site="amazon" id="siteAmazon">Amazon</button>
+            <button type="button" class="site-toggle-btn" data-site="aliexpress" id="siteAliExpress">AliExpress</button>
+        </div>
         <input type="text" id="searchTerm" placeholder='e.g. M6 screw -4mm -M4' value="M6 screw">
         <div class="suggestion" id="spellSuggestion"></div>
         <div class="options">
@@ -93,11 +136,12 @@
             <p>This extension will:</p>
             <ul style="margin: 5px 0; padding-left: 20px;">
                 <li>Filter is <strong>off</strong> until you click Search or Filter</li>
+                <li>Works on <strong>Amazon</strong> or <strong>AliExpress</strong> (.com / .us) — pick a site above</li>
                 <li>Unquoted words must each appear in the title</li>
                 <li>Prefix with <strong>-</strong> to omit titles with that word (e.g. <strong>-4mm</strong>, <strong>-M4</strong>)</li>
                 <li>Quoted phrases like <strong>"4mm OD"</strong> must appear exactly together</li>
                 <li>Strict size matching (M6 won't match M4, M5, or M60)</li>
-                <li>Click Remove Filter on Amazon to turn it off again</li>
+                <li>Click Remove Filter on the results page to turn it off again</li>
             </ul>
         </div>
     </div>

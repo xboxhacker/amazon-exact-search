@@ -40,19 +40,74 @@ function endInternalUpdate() {
     }, 50);
 }
 
+function isAmazonHost(hostname) {
+    return /(^|\.)amazon\.com$/i.test(hostname || location.hostname);
+}
+
+function isAliExpressHost(hostname) {
+    return /(^|\.)aliexpress\.(com|us)$/i.test(hostname || location.hostname);
+}
+
+function isAliExpressPage() {
+    return isAliExpressHost(location.hostname);
+}
+
 function isAmazonSearchPage() {
-    return /amazon\.com/i.test(location.hostname) &&
+    return isAmazonHost(location.hostname) &&
         (location.pathname === '/s' || location.pathname.startsWith('/s/'));
+}
+
+function isAliExpressSearchPage() {
+    if (!isAliExpressPage()) {
+        return false;
+    }
+
+    const path = location.pathname;
+    const params = new URLSearchParams(location.search);
+    return /\/w\/wholesale/i.test(path) ||
+        /\/wholesale/i.test(path) ||
+        params.has('SearchText') ||
+        params.has('searchText') ||
+        !!document.querySelector('#card-list, .search-item-card-wrapper-gallery, [class*="search-item-card-wrapper"]');
+}
+
+function isSupportedSearchPage() {
+    return isAmazonSearchPage() || isAliExpressSearchPage();
+}
+
+function normalizePageSearchKey(value) {
+    if (!value) {
+        return '';
+    }
+
+    return decodeURIComponent(String(value).replace(/\+/g, ' '))
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, ' ');
 }
 
 function getAmazonSearchKeyFromLocation() {
     const params = new URLSearchParams(window.location.search);
-    const k = params.get('k');
-    if (!k) {
-        return '';
+    return normalizePageSearchKey(params.get('k') || '');
+}
+
+function getAliExpressSearchKeyFromLocation() {
+    const params = new URLSearchParams(window.location.search);
+    const searchText = params.get('SearchText') || params.get('searchText') || params.get('q');
+    if (searchText) {
+        return normalizePageSearchKey(searchText);
     }
 
-    return decodeURIComponent(k.replace(/\+/g, ' ')).trim().toLowerCase().replace(/\s+/g, ' ');
+    const wholesale = location.pathname.match(/\/w\/wholesale-(.+)\.html/i);
+    if (wholesale) {
+        return normalizePageSearchKey(wholesale[1].replace(/-/g, ' '));
+    }
+
+    return '';
+}
+
+function getPageSearchKey() {
+    return isAliExpressPage() ? getAliExpressSearchKeyFromLocation() : getAmazonSearchKeyFromLocation();
 }
 
 function endFilterSession(options) {
@@ -60,15 +115,14 @@ function endFilterSession(options) {
 
     clearFilter(false);
     chrome.runtime.sendMessage({ action: 'endFilterSession' }, function() {
-        if (reload && isAmazonSearchPage()) {
-            // Hard restore: Amazon re-renders the original unfiltered results page
+        if (reload && isSupportedSearchPage()) {
             window.location.reload();
         }
     });
 }
 
 // Resume filtering when user returns to a tab or reloads a results page
-if (isAmazonSearchPage()) {
+if (isSupportedSearchPage()) {
     chrome.runtime.sendMessage({ action: 'getTabFilterState' }, function(response) {
         if (chrome.runtime.lastError || !response || !response.shouldFilter || !response.searchTerm) {
             return;
@@ -76,10 +130,10 @@ if (isAmazonSearchPage()) {
 
         filterState.sortMode = response.sortMode || 'amazon';
         filterState.active = true;
-        filterState.sessionAmazonKey = getAmazonSearchKeyFromLocation();
+        filterState.sessionAmazonKey = getPageSearchKey();
         startFiltering(response.searchTerm, response.caseSensitive, response.highlightMatch);
     });
-} else {
+} else if (isAmazonHost(location.hostname) || isAliExpressPage()) {
     // Navigated to cart, product page, etc. — end any active filter session for this tab
     chrome.runtime.sendMessage({ action: 'getTabFilterState' }, function(response) {
         if (chrome.runtime.lastError || !response || !response.shouldFilter) {
@@ -106,11 +160,11 @@ function cleanupFilteringWatchers() {
 }
 
 function startFiltering(searchTerm, caseSensitive, highlightMatch) {
-    if (!isAmazonSearchPage()) {
+    if (!isSupportedSearchPage()) {
         return;
     }
 
-    filterState.sessionAmazonKey = getAmazonSearchKeyFromLocation();
+    filterState.sessionAmazonKey = getPageSearchKey();
     cleanupFilteringWatchers();
 
     const run = () => {
@@ -135,18 +189,18 @@ function watchAmazonSearchNavigation() {
 
     filterState.navWatcherStarted = true;
 
-    // Catch SPA / history navigations where the Amazon query changes
+    // Catch SPA / history navigations where the search query changes
     const check = () => {
         if (!filterState.active) {
             return;
         }
 
-        if (!isAmazonSearchPage()) {
+        if (!isSupportedSearchPage()) {
             endFilterSession();
             return;
         }
 
-        const currentKey = getAmazonSearchKeyFromLocation();
+        const currentKey = getPageSearchKey();
         if (filterState.sessionAmazonKey && currentKey && currentKey !== filterState.sessionAmazonKey) {
             endFilterSession();
         }
@@ -156,7 +210,66 @@ function watchAmazonSearchNavigation() {
     setInterval(check, 1000);
 }
 
+const ALIEXPRESS_CARD_SELECTOR = [
+    '.search-item-card-wrapper-gallery',
+    '.search-item-card-wrapper-list',
+    '[class*="search-item-card-wrapper"]',
+    'a.search-card-item'
+].join(', ');
+
+function isAliExpressCard(element) {
+    return !!(element && element.nodeType === 1 && (
+        element.matches?.(ALIEXPRESS_CARD_SELECTOR) ||
+        element.closest?.(ALIEXPRESS_CARD_SELECTOR)
+    ));
+}
+
+function looksLikeAliExpressProduct(card) {
+    const link = card.querySelector('a[href*="/item/"]') ||
+        (card.matches('a[href*="/item/"]') ? card : null);
+    if (!link) {
+        return false;
+    }
+
+    const text = card.textContent || '';
+    return /[\$€£]|US\s*\$|sold|orders|reviews/i.test(text) ||
+        !!card.querySelector('[class*="price"]');
+}
+
+function getAliExpressProductElements() {
+    const seen = new Set();
+    const products = [];
+
+    document.querySelectorAll(ALIEXPRESS_CARD_SELECTOR).forEach(el => {
+        const card = el.closest('[class*="search-item-card-wrapper"]') || el;
+        if (seen.has(card) || !looksLikeAliExpressProduct(card)) {
+            return;
+        }
+        seen.add(card);
+        products.push(card);
+    });
+
+    if (products.length > 0) {
+        return products;
+    }
+
+    document.querySelectorAll('a[href*="/item/"]').forEach(link => {
+        const card = link.closest('[class*="card"], [class*="product"], li, article') || link;
+        if (seen.has(card) || !looksLikeAliExpressProduct(card)) {
+            return;
+        }
+        seen.add(card);
+        products.push(card);
+    });
+
+    return products;
+}
+
 function getProductElements() {
+    if (isAliExpressPage()) {
+        return getAliExpressProductElements();
+    }
+
     const seen = new Set();
     const products = [];
 
@@ -197,7 +310,43 @@ function getProductElements() {
     return products;
 }
 
+function getAliExpressProductTitle(product) {
+    const titled = product.querySelector('a[href*="/item/"][title], [class*="title"][title], h3[title], h1[title]');
+    if (titled) {
+        const text = (titled.getAttribute('title') || titled.textContent || '').trim();
+        if (text.length > 4 && !/^(US\s*)?\$/.test(text)) {
+            return { element: titled, text };
+        }
+    }
+
+    const titleSelectors = [
+        'h3',
+        'h1',
+        'h2',
+        'a[href*="/item/"] [class*="title"]',
+        '[class*="title"]',
+        'a[href*="/item/"]'
+    ];
+
+    for (const selector of titleSelectors) {
+        const el = product.querySelector(selector);
+        if (!el) {
+            continue;
+        }
+        const text = (el.getAttribute('title') || el.textContent || '').replace(/\s+/g, ' ').trim();
+        if (text.length > 4 && !/^(US\s*)?\$/.test(text) && !/^(choice|sale|sold)$/i.test(text)) {
+            return { element: el, text };
+        }
+    }
+
+    return null;
+}
+
 function getProductTitle(product) {
+    if (isAliExpressPage()) {
+        return getAliExpressProductTitle(product);
+    }
+
     const titleSelectors = [
         'h2 a span.a-text-normal',
         'h2 span.a-text-normal',
@@ -222,8 +371,23 @@ function getProductTitle(product) {
 }
 
 function getProductInfo(product, titleInfo) {
-    const asin = product.getAttribute('data-asin') || '';
     const title = titleInfo?.text || 'Unknown title';
+
+    if (isAliExpressPage()) {
+        const link = product.querySelector('a[href*="/item/"]') ||
+            (product.matches('a[href*="/item/"]') ? product : null);
+        let url = '';
+        let asin = '';
+        if (link && link.href) {
+            url = link.href.split('?')[0].split('#')[0];
+            const idMatch = url.match(/\/item\/(\d+)/);
+            asin = idMatch ? idMatch[1] : '';
+        }
+        const img = product.querySelector('img');
+        return { asin, title, url, imageUrl: img && img.src ? img.src : '' };
+    }
+
+    const asin = product.getAttribute('data-asin') || '';
     const link = product.querySelector('h2 a[href], a.a-link-normal[href*="/dp/"], a[href*="/dp/"]');
     let url = asin ? `https://www.amazon.com/dp/${asin}` : '';
 
@@ -327,7 +491,11 @@ function showHiddenResultsModal() {
             const priceLabel = item.price !== null && item.price !== undefined ?
                 `$${item.price.toFixed(2)}` : 'Price unavailable';
             const deliveryLabel = item.deliveryLabel || 'Delivery unknown';
-            const url = item.url || (item.asin ? `https://www.amazon.com/dp/${item.asin}` : '#');
+            const url = item.url || (item.asin ? (
+                isAliExpressPage() ?
+                    `https://${location.hostname}/item/${item.asin}.html` :
+                    `https://www.amazon.com/dp/${item.asin}`
+            ) : '#');
 
             return `
                 <a class="exact-search-hidden-item" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">
@@ -363,7 +531,34 @@ function isPerUnitPriceBlock(priceEl) {
     return /\/\s*count|per\s+count|\/\s*unit|per\s+unit|per\s+item|\/\s*month|with\s+prime/i.test(text);
 }
 
+function getAliExpressProductPrice(product) {
+    const selectors = [
+        '[class*="price-sale"]',
+        '[class*="multi--price"]',
+        '[class*="price--"]',
+        '[class*="Price"]',
+        '[class*="price"]'
+    ];
+
+    for (const selector of selectors) {
+        const el = product.querySelector(selector);
+        if (!el) {
+            continue;
+        }
+        const value = parsePriceText(el.textContent);
+        if (value !== null && value > 0) {
+            return value;
+        }
+    }
+
+    const match = (product.textContent || '').match(/(?:US\s*)?[$€£]\s*[\d,.]+/);
+    return match ? parsePriceText(match[0]) : null;
+}
+
 function getProductPrice(product) {
+    if (isAliExpressPage()) {
+        return getAliExpressProductPrice(product);
+    }
     const preferredSelectors = [
         '.a-price[data-a-size="xl"][data-a-color="base"] .a-offscreen',
         '.a-price[data-a-size="l"][data-a-color="base"] .a-offscreen',
@@ -427,7 +622,9 @@ function getCardToSort(product) {
 }
 
 function getResultListContainer() {
-    const results = Array.from(document.querySelectorAll('[data-component-type="s-search-result"]'));
+    const results = isAliExpressPage() ?
+        Array.from(document.querySelectorAll(ALIEXPRESS_CARD_SELECTOR)) :
+        Array.from(document.querySelectorAll('[data-component-type="s-search-result"]'));
     if (results.length === 0) {
         return null;
     }
@@ -436,8 +633,7 @@ function getResultListContainer() {
     while (node.parentElement) {
         const parent = node.parentElement;
         const productWrappers = Array.from(parent.children).filter(child =>
-            child.matches('[data-component-type="s-search-result"]') ||
-            child.querySelector('[data-component-type="s-search-result"]')
+            isSearchResultCard(child)
         );
 
         if (productWrappers.length >= 2) {
@@ -451,8 +647,7 @@ function getResultListContainer() {
                     return wrapper;
                 },
                 isProductWrapper(child) {
-                    return child.matches('[data-component-type="s-search-result"]') ||
-                        !!child.querySelector('[data-component-type="s-search-result"]');
+                    return isSearchResultCard(child);
                 }
             };
         }
@@ -573,7 +768,7 @@ function collectDeliveryTexts(product) {
 
     product.querySelectorAll('[aria-label]').forEach(el => {
         const label = el.getAttribute('aria-label');
-        if (/delivery|arrives|get it|overnight/i.test(label)) {
+        if (/delivery|arrives|get it|overnight/i.test(label) || /ship/i.test(label)) {
             addText(label);
         }
     });
@@ -584,20 +779,23 @@ function collectDeliveryTexts(product) {
         '.a-row.a-size-base.a-color-secondary',
         '.a-color-secondary',
         '.a-size-base.a-color-secondary',
-        '.a-text-bold'
+        '.a-text-bold',
+        '[class*="ship"]',
+        '[class*="delivery"]',
+        '[class*="logistic"]'
     ];
 
     selectors.forEach(selector => {
         product.querySelectorAll(selector).forEach(el => {
             const text = el.textContent.trim();
-            if (/delivery|arrives|get it|overnight|tomorrow|today/i.test(text)) {
+            if (/delivery|arrives|get it|overnight|tomorrow|today|shipping/i.test(text)) {
                 addText(text);
             }
         });
     });
 
     if (texts.length === 0) {
-        const matches = product.textContent.match(/(?:get it|delivery|arrives|overnight|tomorrow)[^.]{0,120}/gi);
+        const matches = product.textContent.match(/(?:get it|delivery|arrives|overnight|tomorrow|shipping)[^.]{0,120}/gi);
         if (matches) {
             matches.forEach(addText);
         }
@@ -639,6 +837,10 @@ function getDeliveryDays(product) {
 }
 
 function getSortableUnit(product) {
+    if (isAliExpressPage()) {
+        return product.closest(ALIEXPRESS_CARD_SELECTOR) || product;
+    }
+
     if (product.matches('[data-component-type="s-search-result"]')) {
         return product;
     }
@@ -779,8 +981,7 @@ function getReorderWrapper(unit) {
     while (node.parentElement) {
         const parent = node.parentElement;
         const productSiblings = Array.from(parent.children).filter(child =>
-            child.matches('[data-component-type="s-search-result"]') ||
-            child.querySelector('[data-component-type="s-search-result"]')
+            isSearchResultCard(child)
         );
 
         if (productSiblings.length > 1) {
@@ -794,8 +995,7 @@ function getReorderWrapper(unit) {
 }
 
 function isProductWrapper(element) {
-    return element.matches('[data-component-type="s-search-result"]') ||
-        !!element.querySelector('[data-component-type="s-search-result"]');
+    return isSearchResultCard(element);
 }
 
 function reorderProductWrappers(parent, sortedWrappers) {
@@ -925,7 +1125,7 @@ function ensureResultsSummary() {
     summary = document.createElement('div');
     summary.className = 'exact-search-summary';
     summary.innerHTML = `
-        <button type="button" class="exact-search-close-btn" title="End filter and restore original Amazon results" aria-label="End filter and restore original Amazon results">&times;</button>
+        <button type="button" class="exact-search-close-btn" title="End filter and restore original results" aria-label="End filter and restore original results">&times;</button>
         <div class="exact-search-summary-row">
             <div>
                 <strong>Exact Search Filter Active</strong><br>
@@ -950,11 +1150,14 @@ function ensureResultsSummary() {
 
     wireSummaryEvents(summary);
 
-    const resultsContainer = document.querySelector('[data-component-type="s-search-results"]') ||
+    const resultsContainer = document.querySelector('#card-list') ||
+        document.querySelector('[data-component-type="s-search-results"]') ||
         document.querySelector('.s-main-slot.s-result-list') ||
         document.querySelector('.s-main-slot');
 
-    if (resultsContainer) {
+    if (isAliExpressPage() && resultsContainer && resultsContainer.id === 'card-list' && resultsContainer.parentElement) {
+        resultsContainer.parentElement.insertBefore(summary, resultsContainer);
+    } else if (resultsContainer) {
         resultsContainer.insertBefore(summary, resultsContainer.firstChild);
     } else {
         document.body.insertBefore(summary, document.body.firstChild);
@@ -1134,7 +1337,8 @@ function revealHiddenMatchAncestors() {
 }
 
 function getResultsSlot() {
-    return document.querySelector('.s-main-slot') ||
+    return document.querySelector('#card-list') ||
+        document.querySelector('.s-main-slot') ||
         document.querySelector('[data-component-type="s-search-results"]');
 }
 
@@ -1144,12 +1348,31 @@ function normalizeUiText(text) {
 
 function isLazyLoadLabel(text) {
     const value = normalizeUiText(text);
-    return /^(more results|see more results|show more results)$/i.test(value);
+    return /^(more results|see more results|show more results|view more|load more)$/i.test(value);
+}
+
+function isSearchResultCard(element) {
+    if (!element || element.nodeType !== 1) {
+        return false;
+    }
+
+    if (element.matches('[data-component-type="s-search-result"], .s-result-item[data-asin]')) {
+        return true;
+    }
+
+    if (element.querySelector('[data-component-type="s-search-result"]')) {
+        return true;
+    }
+
+    if (element.matches(ALIEXPRESS_CARD_SELECTOR) || element.querySelector(ALIEXPRESS_CARD_SELECTOR)) {
+        return true;
+    }
+
+    return false;
 }
 
 function slotChildHasProductCard(child) {
-    return child.matches('[data-component-type="s-search-result"]') ||
-        !!child.querySelector('[data-component-type="s-search-result"]');
+    return isSearchResultCard(child);
 }
 
 function getSlotDirectChild(node, slot) {
@@ -1191,7 +1414,9 @@ function suppressAmazonLazyLoad() {
 
     slot.classList.add('exact-search-filtering-slot');
 
-    slot.querySelectorAll('.s-result-list-placeholder, .s-latency-msg, [data-component-type="s-result-list-placeholder"]').forEach(el => {
+    slot.querySelectorAll(
+        '.s-result-list-placeholder, .s-latency-msg, [data-component-type="s-result-list-placeholder"], [class*="infinite"], [class*="load-more"]'
+    ).forEach(el => {
         hideIfPlaceholderHost(getSlotDirectChild(el, slot) || el, slot);
     });
 
@@ -1539,8 +1764,8 @@ function nodeContainsProduct(node) {
         return false;
     }
 
-    return node.matches?.('[data-component-type="s-search-result"], .s-result-item[data-asin]') ||
-        !!node.querySelector?.('[data-component-type="s-search-result"], .s-result-item[data-asin]');
+    return node.matches?.('[data-component-type="s-search-result"], .s-result-item[data-asin], .search-item-card-wrapper-gallery, [class*="search-item-card-wrapper"]') ||
+        !!node.querySelector?.('[data-component-type="s-search-result"], .s-result-item[data-asin], .search-item-card-wrapper-gallery, [class*="search-item-card-wrapper"]');
 }
 
 function mutationHasNewProducts(mutations) {
@@ -1605,7 +1830,8 @@ function observePageChanges(searchTerm, caseSensitive, highlightMatch) {
         }, 800);
     });
 
-    const target = document.querySelector('[data-component-type="s-search-results"]') ||
+    const target = document.querySelector('#card-list') ||
+                  document.querySelector('[data-component-type="s-search-results"]') ||
                   document.querySelector('.s-main-slot') ||
                   document.body;
 

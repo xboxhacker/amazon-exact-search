@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Amazon Exact Title Search",
-  "version": "1.6.0",
-  "description": "Search Amazon and show only exact title matches",
+  "name": "Exact Title Search",
+  "version": "1.7.0",
+  "description": "Search Amazon or AliExpress and show only exact title matches",
   "permissions": [
     "activeTab",
     "storage",
@@ -14,7 +14,11 @@
   },
   "host_permissions": [
     "https://www.amazon.com/*",
-    "https://amazon.com/*"
+    "https://amazon.com/*",
+    "https://*.aliexpress.com/*",
+    "https://aliexpress.com/*",
+    "https://*.aliexpress.us/*",
+    "https://aliexpress.us/*"
   ],
   "action": {
     "default_popup": "popup.html",
@@ -28,7 +32,11 @@
     {
       "matches": [
         "https://www.amazon.com/*",
-        "https://amazon.com/*"
+        "https://amazon.com/*",
+        "https://*.aliexpress.com/*",
+        "https://aliexpress.com/*",
+        "https://*.aliexpress.us/*",
+        "https://aliexpress.us/*"
       ],
       "js": ["content.js"],
       "css": ["styles.css"],

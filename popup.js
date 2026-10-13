@@ -9,37 +9,112 @@ document.addEventListener('DOMContentLoaded', function() {
     const status = document.getElementById('status');
     const spellSuggestion = document.getElementById('spellSuggestion');
     const versionLabel = document.getElementById('versionLabel');
+    const siteButtons = Array.from(document.querySelectorAll('.site-toggle-btn'));
+
+    let targetSite = 'amazon';
+    let aliexpressHost = 'www.aliexpress.com';
 
     versionLabel.textContent = `v${chrome.runtime.getManifest().version}`;
 
-    chrome.storage.local.get(['searchTerm', 'caseSensitive', 'highlightMatch', 'filterEnabled', 'sortMode'], function(data) {
-        if (data.searchTerm) searchTerm.value = data.searchTerm;
-        if (data.caseSensitive !== undefined) caseSensitive.checked = data.caseSensitive;
-        if (data.highlightMatch !== undefined) highlightMatch.checked = data.highlightMatch;
-        if (data.sortMode) sortMode.value = data.sortMode;
+    function siteLabel(site) {
+        return site === 'aliexpress' ? 'AliExpress' : 'Amazon';
+    }
 
-        if (data.filterEnabled) {
-            status.textContent = 'Exact filter is ON for your last search tab';
-        } else {
-            status.textContent = 'Filter is off — use Search Amazon or Filter Current Results to turn it on';
-        }
-    });
-
-    chrome.tabs.query({active: true, currentWindow: true}, function(tabs) {
-        const currentTab = tabs[0];
-        if (currentTab && currentTab.url && currentTab.url.includes('amazon.com/s')) {
-            filterBtn.style.display = 'block';
-        }
-    });
+    function applySiteUi() {
+        document.body.classList.toggle('site-aliexpress', targetSite === 'aliexpress');
+        siteButtons.forEach(button => {
+            button.classList.toggle('site-toggle-btn-active', button.dataset.site === targetSite);
+        });
+        searchBtn.textContent = `Search ${siteLabel(targetSite)}`;
+    }
 
     function currentSettings() {
         return {
             searchTerm: searchTerm.value.trim(),
             caseSensitive: caseSensitive.checked,
             highlightMatch: highlightMatch.checked,
-            sortMode: sortMode.value
+            sortMode: sortMode.value,
+            targetSite,
+            aliexpressHost
         };
     }
+
+    function detectSiteFromUrl(url) {
+        try {
+            const parsed = new URL(url);
+            if (/(^|\.)aliexpress\.(com|us)$/i.test(parsed.hostname)) {
+                return {
+                    site: 'aliexpress',
+                    host: parsed.hostname.replace(/^www\./, '') === 'aliexpress.us' ?
+                        'www.aliexpress.us' : 'www.aliexpress.com',
+                    isSearch: /\/w\/wholesale/i.test(parsed.pathname) ||
+                        /\/wholesale/i.test(parsed.pathname) ||
+                        parsed.searchParams.has('SearchText') ||
+                        parsed.searchParams.has('searchText')
+                };
+            }
+
+            if (/(^|\.)amazon\.com$/i.test(parsed.hostname)) {
+                return {
+                    site: 'amazon',
+                    host: 'www.amazon.com',
+                    isSearch: parsed.pathname === '/s' || parsed.pathname.startsWith('/s/')
+                };
+            }
+        } catch (error) {
+            // ignore invalid tab URLs
+        }
+
+        return null;
+    }
+
+    function setTargetSite(site, persist) {
+        targetSite = site === 'aliexpress' ? 'aliexpress' : 'amazon';
+        applySiteUi();
+        if (persist !== false) {
+            chrome.storage.local.set({ targetSite, aliexpressHost });
+        }
+    }
+
+    chrome.storage.local.get(
+        ['searchTerm', 'caseSensitive', 'highlightMatch', 'filterEnabled', 'sortMode', 'targetSite', 'aliexpressHost'],
+        function(data) {
+            if (data.searchTerm) searchTerm.value = data.searchTerm;
+            if (data.caseSensitive !== undefined) caseSensitive.checked = data.caseSensitive;
+            if (data.highlightMatch !== undefined) highlightMatch.checked = data.highlightMatch;
+            if (data.sortMode) sortMode.value = data.sortMode;
+            if (data.aliexpressHost) aliexpressHost = data.aliexpressHost;
+            if (data.targetSite) targetSite = data.targetSite;
+            applySiteUi();
+
+            if (data.filterEnabled) {
+                status.textContent = `Exact filter is ON for your last ${siteLabel(data.targetSite || 'amazon')} search tab`;
+            } else {
+                status.textContent = 'Filter is off — use Search or Filter Current Results to turn it on';
+            }
+        }
+    );
+
+    chrome.tabs.query({active: true, currentWindow: true}, function(tabs) {
+        const currentTab = tabs[0];
+        const detected = currentTab && currentTab.url ? detectSiteFromUrl(currentTab.url) : null;
+
+        if (detected) {
+            if (detected.site === 'aliexpress') {
+                aliexpressHost = detected.host;
+            }
+            setTargetSite(detected.site, true);
+            if (detected.isSearch) {
+                filterBtn.style.display = 'block';
+            }
+        }
+    });
+
+    siteButtons.forEach(button => {
+        button.addEventListener('click', function() {
+            setTargetSite(button.dataset.site, true);
+        });
+    });
 
     searchTerm.addEventListener('input', function() {
         const term = searchTerm.value.trim();
@@ -71,10 +146,7 @@ document.addEventListener('DOMContentLoaded', function() {
             return;
         }
 
-        status.textContent = 'Opening Amazon with exact filter...';
-
-        // Background opens the tab and enables the filter, so it still
-        // works even though this popup closes as soon as the tab opens.
+        status.textContent = `Opening ${siteLabel(settings.targetSite)} with exact filter...`;
         chrome.runtime.sendMessage({ action: 'searchAndFilter', settings });
     });
 
@@ -91,6 +163,16 @@ document.addEventListener('DOMContentLoaded', function() {
                 return;
             }
 
+            const detected = detectSiteFromUrl(tabs[0].url || '');
+            if (detected) {
+                settings.targetSite = detected.site;
+                if (detected.site === 'aliexpress') {
+                    settings.aliexpressHost = detected.host;
+                    aliexpressHost = detected.host;
+                }
+                setTargetSite(detected.site, true);
+            }
+
             chrome.runtime.sendMessage({
                 action: 'filterCurrentTab',
                 tabId: tabs[0].id,
@@ -99,7 +181,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 if (chrome.runtime.lastError || !response || !response.ok) {
                     status.textContent = 'Could not start filter — try the Reset button below';
                 } else {
-                    status.textContent = 'Exact filter turned ON for this tab';
+                    status.textContent = `Exact filter turned ON for this ${siteLabel(settings.targetSite)} tab`;
                 }
             });
         });
